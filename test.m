@@ -1,0 +1,184 @@
+clc;
+close all;
+clear;
+
+Ghia_y = [0.0000, 0.0547, 0.0625, 0.0703, 0.1016, 0.1719, 0.2813, 0.4531, 0.5000, 0.6172, 0.7344, 0.8516, 0.9531, 0.9609, 0.9688, 0.9766, 1.0000];
+Ghia_u = [0.0000, -0.03717, -0.04192, -0.04775, -0.06434, -0.10150, -0.15662, -0.21090, -0.20581, -0.13641, 0.00332, 0.23151, 0.68717, 0.73722, 0.78871, 0.84123, 1.0000];
+Ghia_x = [0.0000, 0.0625, 0.0703, 0.0781, 0.0938, 0.1563, 0.2266, 0.2344, 0.5000, 0.8047, 0.8594, 0.9063, 0.9453, 0.9531, 0.9609, 0.9688, 1.0000];
+Ghia_v = [0.0000, 0.09233, 0.10091, 0.10890, 0.12317, 0.16077, 0.17507, 0.17527, 0.05454, -0.24533, -0.22445, -0.16914, -0.10313, -0.08864, -0.07391, -0.05906, 0.0000];
+
+%parameters for test cases a,b, and c
+cases = [
+    struct('nu', 0.1, 'rho', 1, 'nx', 41, 'ny', 41, 'nt', 500, 'dt', 0.06 * (1/(41-1)), 'nit', 200),
+    struct('nu', 0.01, 'rho', 1, 'nx', 41, 'ny', 41, 'nt', 5000, 'dt', 0.06 * (1/(41-1)), 'nit', 200),
+    struct('nu', 0.0025, 'rho', 1, 'nx', 111, 'ny', 111, 'nt', 10000, 'dt', 0.06 * (1/(111-1)), 'nit', 200)
+];
+
+%solve for each test case
+results = cell(1, length(cases));
+for i = 1:length(cases)
+    case_params = cases(i);
+    [u, v, p, X, Y] = lid_driven_cavity(case_params.nu, case_params.rho, case_params.nx, case_params.ny, case_params.nt, case_params.dt, case_params.nit);
+    results{i} = struct('u', u, 'v', v, 'p', p, 'X', X, 'Y', Y);
+    filename = sprintf('Results_case_%d.mat', i);
+    save(filename, 'u', 'v', 'p', 'X', 'Y');
+end
+
+for i = 1:length(results)
+    res = results{i};
+    u = res.u;
+    v = res.v;
+    p = res.p;
+    X = res.X;
+    Y = res.Y;
+    
+    %vlocity magnitude plot
+    VEC = sqrt(u.^2 + v.^2);
+    figure;
+    contourf(X, Y, VEC', 'LineColor', 'none');
+    colorbar;
+    hold on;
+    skip = 5;
+    quiver(Y(1:skip:end), X(1:skip:end), u(1:skip:end), v(1:skip:end), 4, 'w');
+    xlim([0 1]);
+    ylim([0 1]);
+    xlabel('x');
+    ylabel('y');
+    title(sprintf('Fluid velocity field (magnitude) for test case (%d)', i));
+    
+    %pressure field plot
+    figure;
+    contourf(X, Y, p', 'LineColor', 'none');
+    colorbar;
+    hold on;
+    quiver(Y(1:skip:end), X(1:skip:end), u(1:skip:end), v(1:skip:end), 4, 'w');
+    xlim([0 1]);
+    ylim([0 1]);
+    xlabel('x');
+    ylabel('y');
+    title(sprintf('Pressure field with velocity vectors for test case (%d)', i));
+    
+    %u-velocity profile along x=0.5
+    figure;
+    if mod(size(u, 1), 2) == 0
+        plot(Y(:, size(u, 1)/2), u(:, size(u, 1)/2), 'k');
+    else
+        plot(Y(:, ceil(size(u, 1)/2)), u(:, ceil(size(u, 1)/2)), 'k');
+    end
+    xlabel('y');
+    ylabel('u(y) at x=0.5');
+    grid on;
+    title(sprintf('u(y) - Comparison to Ghia et al. for test case (%d)', i));
+    hold on;
+    if i == 2 || i == 3
+        plot(Ghia_y, Ghia_u, 'r*');
+        legend('u(y)', 'Ghia solution', 'Location', 'northwest');
+    else
+        legend('u(y)', 'Location', 'northwest');
+    end
+    
+    %v-velocity profile along y=0.5
+    figure;
+    if mod(size(v, 2), 2) == 0
+        plot(X(size(v, 2)/2, :), v(size(v, 2)/2, :), 'k');
+    else
+        plot(X(ceil(size(v, 2)/2), :), v(ceil(size(v, 2)/2), :), 'k');
+    end
+    xlabel('x');
+    ylabel('v(x) at y=0.5');
+    grid on;
+    title(sprintf('v(x) - Comparison to Ghia et al. for test case (%d)', i));
+    hold on;
+    if i == 2 || i == 3
+        plot(Ghia_x, Ghia_v, 'r*');
+        legend('v(x)', 'Ghia solution', 'Location', 'northwest');
+    else
+        legend('v(x)', 'Location', 'northwest');
+    end
+end
+
+function [u, v, p, X, Y] = lid_driven_cavity(nu, rho, nx, ny, nt, dt, nit)
+    dx = 1 / (nx - 1);
+    dy = 1 / (ny - 1);
+    x = linspace(0, 1, nx);
+    y = linspace(0, 1, ny);
+    [X, Y] = meshgrid(x, y);
+    u = zeros(nx, ny);
+    v = zeros(nx, ny);
+    p = zeros(nx, ny);
+    b = zeros(nx, ny);
+
+    u(:, end) = 1; %lid velocity
+
+    %a helper function to update pressure field
+    function b = build_up_b(rho, dt, u, v, dx, dy)
+        [nx, ny] = size(u);
+        b = zeros(nx, ny);
+        for i = 2:nx-1
+            for j = 2:ny-1
+                b(i, j) = rho * (1 / dt * ((u(i+1, j) - u(i-1, j)) / (2*dx) + (v(i, j+1) - v(i, j-1)) / (2*dy)) - ...
+                          ((u(i+1, j) - u(i-1, j)) / (2*dx))^2 - 2 * ((u(i, j+1) - u(i, j-1)) / (2*dy) * (v(i+1, j) - v(i-1, j)) / (2*dx)) - ...
+                          ((v(i, j+1) - v(i, j-1)) / (2*dy))^2);
+            end
+        end
+    end
+
+    %a helper function to solve pressure Poisson equation
+    function p = pressure_poisson(p, dx, dy, b, nit)
+        [nx, ny] = size(p);
+        pn = zeros(nx, ny);
+        for q = 1:nit
+            pn = p;
+            for i = 2:nx-1
+                for j = 2:ny-1
+                    p(i, j) = (((pn(i+1, j) + pn(i-1, j)) * dy^2 + (pn(i, j+1) + pn(i, j-1)) * dx^2) / ...
+                              (2 * (dx^2 + dy^2)) - dx^2 * dy^2 / (2 * (dx^2 + dy^2)) * b(i, j));
+                end
+            end
+            %BC
+            p(:, end) = p(:, end-1); % dp/dy = 0 at y = 1
+            p(:, 1) = p(:, 2); % dp/dy = 0 at y = 0
+            p(1, :) = p(2, :); % dp/dx = 0 at x = 0
+            p(end, :) = p(end-1, :); % dp/dx = 0 at x = 1
+            p(1, end) = 0; % p = 0 at y = 1
+        end
+    end
+
+    for n = 1:nt
+        un = u;
+        vn = v;
+        b = build_up_b(rho, dt, un, vn, dx, dy);
+        p = pressure_poisson(p, dx, dy, b, nit);
+        
+        %update velocity fields using discretized Navier-Stokes equations
+        for i = 2:nx-1
+            for j = 2:ny-1
+                u(i, j) = un(i, j) ...
+                    - un(i, j) * dt / dx * (un(i, j) - un(i-1, j)) ...
+                    - vn(i, j) * dt / dy * (un(i, j) - un(i, j-1)) ...
+                    - dt / (2 * rho * dx) * (p(i+1, j) - p(i-1, j)) ...
+                    + nu * (dt / dx^2 * (un(i+1, j) - 2 * un(i, j) + un(i-1, j)) ...
+                    + dt / dy^2 * (un(i, j+1) - 2 * un(i, j) + un(i, j-1)));
+                
+                v(i, j) = vn(i, j) ...
+                    - un(i, j) * dt / dx * (vn(i, j) - vn(i-1, j)) ...
+                    - vn(i, j) * dt / dy * (vn(i, j) - vn(i, j-1)) ...
+                    - dt / (2 * rho * dy) * (p(i, j+1) - p(i, j-1)) ...
+                    + nu * (dt / dx^2 * (vn(i+1, j) - 2 * vn(i, j) + vn(i-1, j)) ...
+                    + dt / dy^2 * (vn(i, j+1) - 2 * vn(i, j) + vn(i, j-1)));
+            end
+        end
+        
+        u(:, 1) = 0;
+        u(:, end) = 1; %lid velocity
+        u(1, :) = 0;
+        u(end, :) = 0;
+        
+        v(:, 1) = 0;
+        v(:, end) = 0;
+        v(1, :) = 0;
+        v(end, :) = 0;
+    end
+end
+
+
